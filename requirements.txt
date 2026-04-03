@@ -1,0 +1,6 @@
+streamlit
+groq
+python-docx
+matplotlib
+numpy
+reportlab
