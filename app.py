@@ -620,7 +620,7 @@ Label this section clearly as "NOTE TO FAMILY" — do not call it "Parent-Friend
 # ══════════════════════════════════════════════════════════════
 def _pdf_styles():
     S = {}
-    S['title']    = ParagraphStyle('title',    fontName='Helvetica-Bold',  fontSize=17, textColor=PDF_DEEP,  spaceAfter=3,  alignment=TA_CENTER)
+    S['title']    = ParagraphStyle('title',    fontName='Helvetica-Bold',  fontSize=17, textColor=PDF_DEEP,  spaceAfter=10,  alignment=TA_CENTER)
     S['subtitle'] = ParagraphStyle('subtitle', fontName='Helvetica',       fontSize=9,  textColor=PDF_GOLD,  spaceAfter=2,  alignment=TA_CENTER)
     S['section']  = ParagraphStyle('section',  fontName='Helvetica-Bold',  fontSize=11, textColor=PDF_DEEP,  spaceBefore=14,spaceAfter=4)
     S['body']     = ParagraphStyle('body',     fontName='Helvetica',       fontSize=9.5,textColor=colors.HexColor('#1A1A2E'),leading=14,spaceAfter=5)
