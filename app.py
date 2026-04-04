@@ -253,8 +253,68 @@ RAW REPORT TEXT:
         return {}
 
 # ══════════════════════════════════════════════════════════════
-#  CHARTS
+#  STEP 2B: TRANSLATE / TRANSLITERATE ARABIC DEMOGRAPHICS
 # ══════════════════════════════════════════════════════════════
+def translate_demographics(data: dict) -> dict:
+    """
+    Translate any Arabic text in demographic fields to English.
+    Names are transliterated phonetically. Other fields are translated.
+    Returns updated data dict with English-safe values.
+    """
+    fields = {
+        "name":      data.get("name","") or "",
+        "dob":       data.get("dob","") or "",
+        "age":       data.get("age","") or "",
+        "gender":    data.get("gender","") or "",
+        "grade":     data.get("grade","") or "",
+        "school":    data.get("school","") or "",
+        "examiner":  data.get("examiner","") or "",
+        "test_date": data.get("test_date","") or "",
+        "referral":  data.get("referral","") or "",
+    }
+
+    # Check if any field contains Arabic
+    has_arabic = any(
+        any('\u0600' <= c <= '\u06FF' for c in str(v))
+        for v in fields.values()
+    )
+    if not has_arabic:
+        return data  # Nothing to translate
+
+    prompt = f"""You are a translation assistant. The following fields may contain Arabic text from a psychological assessment report.
+
+For each field:
+- "name" and "examiner": transliterate phonetically to English (e.g. أحمد → Ahmed, محمد → Mohammed)
+- "gender": translate (ذكر → Male, أنثى → Female)
+- "dob", "test_date": keep numbers exactly, translate month names if written in Arabic
+- "age": translate fully (e.g. ٨ سنوات ٣ أشهر → 8 years 3 months)
+- All other fields: translate to English
+
+Return ONLY a valid JSON object with the same keys, values in English. No explanation, no markdown.
+
+Input:
+{json.dumps(fields, ensure_ascii=False)}
+"""
+    try:
+        client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+        r = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=400,
+            temperature=0.1,
+        )
+        raw = r.choices[0].message.content.strip()
+        raw = re.sub(r"^```[a-z]*\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw)
+        translated = json.loads(raw)
+        for k, v in translated.items():
+            if v and k in data:
+                data[k] = v
+    except Exception:
+        pass  # If translation fails, use original values
+    return data
+
+
 def make_profile_chart(data: dict) -> bytes:
     all_keys   = ["FSIQ","NVIQ","VIQ","FR","KN","QR","VS","WM"]
     all_labels, all_vals, all_colors = [], [], []
@@ -542,9 +602,10 @@ e) Therapeutic or clinical referrals if indicated
 11. SUMMARY
 A concise 2-paragraph executive summary for school teams and specialists.
 
-PARENT-FRIENDLY SUMMARY
-Write a plain-language 2-paragraph explanation for parents/caregivers with NO jargon.
-Explain what the test found, what it means for their child day-to-day, and the 3 most important next steps.
+NOTE TO FAMILY
+Write a warm, plain-language 2-paragraph explanation for the family with NO clinical jargon.
+Explain what the test found, what it means for their child in daily life, and the 3 most important next steps.
+Label this section clearly as "NOTE TO FAMILY" — do not call it "Parent-Friendly Summary" or anything else.
 """
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
     r = client.chat.completions.create(
@@ -565,7 +626,7 @@ def _pdf_styles():
     S['body']     = ParagraphStyle('body',     fontName='Helvetica',       fontSize=9.5,textColor=colors.HexColor('#1A1A2E'),leading=14,spaceAfter=5)
     S['small']    = ParagraphStyle('small',    fontName='Helvetica',       fontSize=8,  textColor=PDF_MID,   leading=11)
     S['bold']     = ParagraphStyle('bold',     fontName='Helvetica-Bold',  fontSize=9.5,textColor=colors.HexColor('#1A1A2E'),leading=14,spaceAfter=3)
-    S['parent']   = ParagraphStyle('parent',   fontName='Helvetica',       fontSize=10.5,textColor=colors.HexColor('#1A1A2E'),leading=16,spaceAfter=5,leftIndent=8)
+    S['parent']   = ParagraphStyle('parent',   fontName='Helvetica',       fontSize=10.5,textColor=colors.HexColor('#1A1A2E'),leading=16,spaceAfter=6,leftIndent=10,rightIndent=10,backColor=colors.HexColor('#FFFDF0'))
     return S
 
 def _hdr_style(): return colors.HexColor('#1B3A6B')
@@ -704,10 +765,10 @@ def build_pdf_report(report_text, data, charts, center_name="", logo_bytes=None)
 
     sec_pat = re.compile(r'^\d+\.\s+[A-Z][A-Z\s,&/\(\):\']+$')
     header_words = {
-        "REASON FOR REFERRAL","BACKGROUND INFORMATION","TESTS ADMINISTERED",
-        "BEHAVIORAL OBSERVATIONS","ASSESSMENT RESULTS AND INTERPRETATION",
+        "ASSESSMENT RESULTS AND INTERPRETATION",
         "STRENGTHS AND WEAKNESSES PROFILE","DIAGNOSTIC IMPRESSIONS",
-        "RECOMMENDATIONS","SUMMARY","PARENT-FRIENDLY SUMMARY",
+        "RECOMMENDATIONS","SUMMARY","NOTE TO FAMILY",
+        "PARENT-FRIENDLY SUMMARY",  # fallback in case LLM ignores instruction
         "STANFORD-BINET INTELLIGENCE SCALES, FIFTH EDITION — PSYCHOLOGICAL REPORT",
         "CLINICAL NARRATIVE REPORT",
     }
@@ -725,12 +786,12 @@ def build_pdf_report(report_text, data, charts, center_name="", logo_bytes=None)
                   any(upper.startswith(h) for h in header_words))
 
         if is_sec:
-            if "PARENT" in upper or "SIMPLIFIED" in upper:
+            if "NOTE TO FAMILY" in upper or "PARENT" in upper or "FAMILY" in upper:
                 in_parent = True
                 story.append(HRFlowable(width=W,thickness=2,color=PDF_GOLD,spaceAfter=4))
-                story.append(Paragraph(f"⭐  {ls}  ⭐", ParagraphStyle('psec',
-                    fontName='Helvetica-Bold',fontSize=12,textColor=PDF_GOLD,
-                    spaceBefore=10,spaceAfter=6,alignment=TA_CENTER)))
+                story.append(Paragraph("NOTE TO FAMILY", ParagraphStyle('psec',
+                    fontName='Helvetica-Bold',fontSize=13,textColor=PDF_GOLD,
+                    spaceBefore=12,spaceAfter=8,alignment=TA_CENTER)))
             else:
                 story.append(Paragraph(ls, S['section']))
             continue
@@ -738,19 +799,22 @@ def build_pdf_report(report_text, data, charts, center_name="", logo_bytes=None)
         if '|' in ls:
             parts = [p.strip() for p in ls.split('|') if p.strip()]
             if len(parts) >= 2:
-                skip = [("name","date of birth"),("field","value")]
-                key_pair = (parts[0].lower().strip(),parts[1].lower().strip()) if len(parts)>=2 else ("","")
-                if key_pair not in skip:
-                    col_w = W/len(parts)
-                    mini = Table([[Paragraph(p,S['body']) for p in parts]], colWidths=[col_w]*len(parts))
-                    mini.setStyle(TableStyle([
-                        ('BOX',(0,0),(-1,-1),0.3,PDF_BORDER),
-                        ('BACKGROUND',(0,0),(-1,-1),_shade1()),
-                        ('TOPPADDING',(0,0),(-1,-1),3),
-                        ('BOTTOMPADDING',(0,0),(-1,-1),3),
-                        ('LEFTPADDING',(0,0),(-1,-1),5),
-                    ]))
-                    story.append(KeepTogether([mini])); continue
+                # Skip only table-header rows from score tables
+                skip_pairs = [("field","value"),("subscale","raw"),("scale","ss")]
+                key_pair = (parts[0].lower().strip(), parts[1].lower().strip())
+                if key_pair in skip_pairs:
+                    continue
+                col_w = W / len(parts)
+                mini = Table([[Paragraph(p, S['body']) for p in parts]],
+                             colWidths=[col_w]*len(parts))
+                mini.setStyle(TableStyle([
+                    ('BOX',(0,0),(-1,-1),0.3,PDF_BORDER),
+                    ('BACKGROUND',(0,0),(-1,-1),_shade1()),
+                    ('TOPPADDING',(0,0),(-1,-1),3),
+                    ('BOTTOMPADDING',(0,0),(-1,-1),3),
+                    ('LEFTPADDING',(0,0),(-1,-1),5),
+                ]))
+                story.append(KeepTogether([mini])); continue
 
         style = S['parent'] if in_parent else S['body']
         story.append(Paragraph(ls, style))
@@ -1110,6 +1174,9 @@ if uploaded:
         if not data:
             st.error("Could not parse the report data. Please check the uploaded file.")
             st.stop()
+
+        # 2b. Translate/transliterate any Arabic demographic fields to English
+        data = translate_demographics(data)
 
         # 3. Generate charts
         charts = {}
