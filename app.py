@@ -169,13 +169,16 @@ Extract ALL available information and return ONLY a valid JSON object — no exp
 Extract these fields (use null for any missing value):
 {{
   "name": "examinee full name",
-  "dob": "date of birth",
-  "age": "age as stated",
+  "dob": "date of birth EXACTLY as written in the document (day/month/year)",
+  "age": "age EXACTLY as written — include years, months, days if shown e.g. '8 years 3 months 12 days'",
+  "age_years": integer_or_null,
+  "age_months": integer_or_null,
+  "age_days": integer_or_null,
   "gender": "male or female (translate from Arabic if needed)",
   "grade": "school grade or level",
   "school": "school or institution name",
-  "examiner": "examiner name",
-  "test_date": "date of testing",
+  "examiner": "examiner name — look for الفاحص or الأخصائي or المختبر",
+  "test_date": "date of testing EXACTLY as written in the document",
   "referral": "referral source",
   "complaints": "reason for referral / presenting complaints",
   "behavioral_obs": "behavioral observations during testing",
@@ -209,6 +212,9 @@ Extract these fields (use null for any missing value):
 }}
 
 Notes:
+- CRITICAL: Copy dob and test_date EXACTLY as they appear in the document — do not reformat
+- CRITICAL: Copy age EXACTLY as stated — e.g. "8 سنة 3 شهر 12 يوم" → "8 years 3 months 12 days"
+- CRITICAL: الفاحص = examiner. Also check for: الأخصائي، المقيّم، اسم الفاحص
 - درجة الذكاء الكلية = FSIQ
 - المجال غير اللفظي / غير لفظي = NVIQ
 - المجال اللفظي / لفظي = VIQ
@@ -460,55 +466,37 @@ def generate_en_report(data: dict) -> str:
     gender   = data.get("gender","—") or "—"
     pronoun  = "he" if "male" in str(gender).lower() else "she"
     examiner = data.get("examiner","—") or "—"
-    referral = data.get("referral","—") or "—"
-    complaints = data.get("complaints","Not provided") or "Not provided"
-    behavioral = data.get("behavioral_obs","Not provided") or "Not provided"
-    background = data.get("background","Not provided") or "Not provided"
+    dob      = data.get("dob","—") or "—"
+    tdate    = data.get("test_date","—") or "—"
 
     prompt = f"""You are a senior licensed psychologist writing a world-class Stanford-Binet 5 (SB5) psychological assessment report.
 Use the most current research on SB5 (Roid, 2003; Roid et al., 2016) and CHC theory of intelligence.
 
 EXAMINEE: {name} | AGE: {age} | GENDER: {gender} | EXAMINER: {examiner}
-REFERRAL SOURCE: {referral}
-REASON FOR REFERRAL: {complaints}
-TEST DATE: {data.get("test_date","—") or "—"}
+DATE OF BIRTH: {dob}
+TEST DATE: {tdate}
 REPORT DATE: {date.today().strftime('%B %d, %Y')}
 
 SCORE SUMMARY:
 {score_summary}
 
-BEHAVIORAL OBSERVATIONS: {behavioral}
-BACKGROUND INFORMATION: {background}
-
 Write a COMPREHENSIVE, PREMIUM SB5 report. Use formal psychoeducational language. Be very specific to the actual scores.
 No markdown symbols (**, ##, ---, etc.). Section titles: ALL CAPS on their own line.
 Use {pronoun}/{pronoun}s consistently. Reference specific scores and percentiles throughout.
 
-REPORT STRUCTURE:
+IMPORTANT — The report must start with this exact header block, filling in the values as given:
 
 STANFORD-BINET INTELLIGENCE SCALES, FIFTH EDITION — PSYCHOLOGICAL REPORT
 Name | {name}
-Date of Birth | {data.get("dob","—") or "—"}
+Date of Birth | {dob}
 Age | {age}
 Gender | {gender}
 Examiner | {examiner}
-Test Date | {data.get("test_date","—") or "—"}
+Test Date | {tdate}
 Report Date | {date.today().strftime('%B %d, %Y')}
-Referral Source | {referral}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-REASON FOR REFERRAL
-3–5 sentences: who referred, what was the clinical question, what this evaluation addresses.
-
-BACKGROUND INFORMATION
-Relevant developmental, educational, medical, and family history from the provided background.
-
-TESTS ADMINISTERED
-List SB5 and any other assessments mentioned.
-
-BEHAVIORAL OBSERVATIONS
-Describe behavior during testing: cooperation, attention, affect, language, motor, approach.
-Note any factors that may affect validity.
+Then write these sections IN ORDER — do NOT include Reason for Referral, Background Information, Tests Administered, or Behavioral Observations:
 
 ASSESSMENT RESULTS AND INTERPRETATION
 
@@ -566,116 +554,8 @@ Explain what the test found, what it means for their child day-to-day, and the 3
     )
     return r.choices[0].message.content.strip()
 
-def generate_ar_report(data: dict) -> str:
-    name     = data.get("name","المفحوص") or "المفحوص"
-    age      = data.get("age","—") or "—"
-    gender   = data.get("gender","—") or "—"
-    examiner = data.get("examiner","—") or "—"
-    referral = data.get("referral","—") or "—"
-
-    ar_scores = []
-    for k in IQ_SCORES:
-        v = data.get(k)
-        if v:
-            _,ar_c,_ = classify(v); pct=percentile_from_ss(v); ci=data.get(f"{k}_ci","—")
-            ar_scores.append(f"  {IQ_LABELS[k]['ar']}: {v} — {ar_c} (مئيني: {pct}، مدى ثقة 90%: {ci})")
-    for k in FACTOR_SCORES:
-        v = data.get(k)
-        if v:
-            _,ar_c,_ = classify(v); pct=percentile_from_ss(v); ci=data.get(f"{k}_ci","—")
-            ar_scores.append(f"  {FACTOR_LABELS[k]['ar']}: {v} — {ar_c} (مئيني: {pct}، مدى ثقة: {ci})")
-
-    prompt = f"""أنت طبيب نفسي متخصص تكتب تقريراً سريرياً شاملاً ومتقدماً لمقياس ستانفورد-بينيه الصورة الخامسة (SB5).
-استخدم نظرية CHC في الذكاء (Cattell-Horn-Carroll) وأحدث الأبحاث المتعلقة بالمقياس.
-
-المفحوص: {name} | العمر: {age} | النوع: {gender} | الفاحص: {examiner}
-جهة الإحالة: {referral}
-سبب الإحالة: {data.get("complaints","—") or "—"}
-تاريخ التطبيق: {data.get("test_date","—") or "—"}
-تاريخ التقرير: {date.today().strftime('%Y/%m/%d')}
-
-ملخص الدرجات:
-{chr(10).join(ar_scores)}
-
-الملاحظات السلوكية: {data.get("behavioral_obs","لم تُذكر") or "لم تُذكر"}
-المعلومات الأساسية: {data.get("background","لم تُذكر") or "لم تُذكر"}
-
-اكتب تقريراً سريرياً نفسياً شاملاً ومتقدماً بالعربية الفصحى.
-لا تستخدم رموز markdown (**, ##, ---, إلخ). عناوين الأقسام: أرقام + عناوين واضحة.
-لا إنجليزية إلا للاختصارات المقبولة (SB5, IQ, CHC, FSIQ, NVIQ, VIQ).
-
-تقرير مقياس ستانفورد-بينيه للذكاء — الصورة الخامسة
-الاسم | {name}
-تاريخ الميلاد | {data.get("dob","—") or "—"}
-العمر | {age}
-النوع | {gender}
-الفاحص | {examiner}
-تاريخ التطبيق | {data.get("test_date","—") or "—"}
-تاريخ التقرير | {date.today().strftime('%Y/%m/%d')}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-١. سبب الإحالة
-فقرة من ٣-٥ جمل: من أحال وما هو التساؤل الإكلينيكي.
-
-٢. المعلومات الأساسية
-التاريخ التطوري والتعليمي والطبي والأسري ذات الصلة.
-
-٣. الاختبارات المطبقة
-اذكر المقياس وأي أدوات أخرى ذُكرت.
-
-٤. الملاحظات السلوكية
-وصف سلوك المفحوص أثناء التطبيق. اذكر العوامل المؤثرة في صدق النتائج.
-
-٥. نتائج التقييم وتفسيرها
-
-أ. درجة الذكاء الكلية (FSIQ)
-تفسير معمق: الدرجة، فترة الثقة، المئيني، الفئة، الدلالة الإكلينيكية في إطار نظرية CHC.
-
-ب. الذكاء غير اللفظي (NVIQ) والذكاء اللفظي (VIQ)
-مقارنة المجالين. الدلالة الإكلينيكية لأي فرق ذي دلالة إحصائية.
-
-ج. الاستدلال التحليلي (FR)
-تفسير عامل الاستدلال السائل.
-
-د. المعلومات (KN)
-تفسير الذكاء المتبلور والمعرفة العامة.
-
-هـ. الاستدلال الكمي (QR)
-القدرة الرياضية والعددية.
-
-و. المعالجة البصرية المكانية (VS)
-القدرة على التصور والمعالجة البصرية.
-
-ز. الذاكرة العاملة (WM)
-الذاكرة قصيرة المدى، الانتباه، الكفاءة المعرفية.
-
-٦. نقاط القوة والقصور النسبي
-تحديد نقاط القوة والقصور النسبي بناءً على الملف الكامل.
-
-٧. الانطباعات التشخيصية
-الأنماط الإكلينيكية الظاهرة. لا تقديم تشخيص رسمي — فرضيات إكلينيكية فقط.
-
-٨. التوصيات
-قدم ١٠-١٢ توصية محددة ومبنية على الأدلة في المجالات:
-أ) التعليمية والأكاديمية   ب) التدخل العلاجي   ج) تقييمات إضافية   د) دعم الأسرة   هـ) الإحالات
-
-٩. الملخص
-فقرتان موجزتان للفريق المتخصص.
-
-ملخص للوالدين
-فقرتان بلغة مبسطة للأسرة بدون مصطلحات تخصصية.
-اشرح ما وجده الاختبار وماذا يعني لطفلهم في حياته اليومية وأهم ٣ خطوات للأمام.
-"""
-    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-    r = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role":"user","content":prompt}],
-        max_tokens=4500,
-    )
-    return r.choices[0].message.content.strip()
-
 # ══════════════════════════════════════════════════════════════
-#  STEP 4A: BUILD ENGLISH PDF REPORT
+#  STEP 4: BUILD ENGLISH PDF REPORT
 # ══════════════════════════════════════════════════════════════
 def _pdf_styles():
     S = {}
@@ -1010,254 +890,24 @@ def _build_legend_table(S, W):
     return tbl
 
 # ══════════════════════════════════════════════════════════════
-#  STEP 4B: BUILD ARABIC WORD REPORT
+#  EMAIL  (PDF only)
 # ══════════════════════════════════════════════════════════════
-def build_word_doc(report_text: str, data: dict, charts: dict,
-                   center_name: str = "", logo_bytes: bytes = None) -> io.BytesIO:
-    is_rtl = True
-    doc = Document()
-    for sec_ in doc.sections:
-        sec_.top_margin=Cm(2.0); sec_.bottom_margin=Cm(2.0)
-        sec_.left_margin=Cm(2.5); sec_.right_margin=Cm(2.5)
-    # Page border
-    for sec_ in doc.sections:
-        sp=sec_._sectPr; pb=OxmlElement('w:pgBorders')
-        pb.set(qn('w:offsetFrom'),'page')
-        for side in ('top','left','bottom','right'):
-            b=OxmlElement(f'w:{side}'); b.set(qn('w:val'),'single')
-            b.set(qn('w:sz'),'8'); b.set(qn('w:space'),'24')
-            b.set(qn('w:color'),'1B3A6B'); pb.append(b)
-        sp.append(pb)
-    # Footer
-    for sec_ in doc.sections:
-        ft=sec_.footer; fp=ft.paragraphs[0] if ft.paragraphs else ft.add_paragraph()
-        fp.clear(); fp.alignment=WD_ALIGN_PARAGRAPH.CENTER
-        r_=fp.add_run(); r_.font.size=Pt(9); r_.font.color.rgb=MID_BLUE_RGB
-        for tag,text in [('begin',None),(None,' PAGE '),('end',None)]:
-            if tag:
-                el=OxmlElement('w:fldChar'); el.set(qn('w:fldCharType'),tag); r_._r.append(el)
-            else:
-                it=OxmlElement('w:instrText'); it.text=text; r_._r.append(it)
-
-    def set_rtl(p):
-        pPr=p._p.get_or_add_pPr(); pPr.append(OxmlElement("w:bidi"))
-        jc=OxmlElement("w:jc"); jc.set(qn("w:val"),"right"); pPr.append(jc)
-
-    def add_para(text,bold=False,size=11,color=None,space_before=0,space_after=4,alignment=None,italic=False):
-        p=doc.add_paragraph()
-        p.paragraph_format.space_before=Pt(space_before); p.paragraph_format.space_after=Pt(space_after)
-        set_rtl(p)
-        if alignment: p.alignment=alignment
-        r_=p.add_run(text); r_.font.size=Pt(size); r_.font.name="Arial"
-        r_.font.bold=bold; r_.font.italic=italic
-        if color: r_.font.color.rgb=color
-        return p
-
-    def add_section_title(text):
-        p=doc.add_paragraph()
-        p.paragraph_format.space_before=Pt(14); p.paragraph_format.space_after=Pt(4)
-        p.paragraph_format.keep_with_next=True
-        set_rtl(p)
-        r_=p.add_run(text.strip()); r_.font.size=Pt(13); r_.font.name="Arial"
-        r_.font.bold=True; r_.font.color.rgb=DEEP_BLUE_RGB
-        pPr=p._p.get_or_add_pPr(); pBdr=OxmlElement('w:pBdr')
-        bot=OxmlElement('w:bottom'); bot.set(qn('w:val'),'single'); bot.set(qn('w:sz'),'8')
-        bot.set(qn('w:space'),'2'); bot.set(qn('w:color'),'1B3A6B')
-        pBdr.append(bot); pPr.append(pBdr)
-
-    def make_table(col_widths):
-        t=doc.add_table(rows=0,cols=len(col_widths)); t.style='Table Grid'
-        try:
-            tPr=t._tbl.tblPr
-            bv=OxmlElement('w:bidiVisual'); tPr.append(bv)
-            tW=OxmlElement('w:tblW'); tW.set(qn('w:w'),'9026'); tW.set(qn('w:type'),'dxa'); tPr.append(tW)
-            tg=OxmlElement('w:tblGrid')
-            for w in col_widths:
-                gc=OxmlElement('w:gridCol'); gc.set(qn('w:w'),str(w)); tg.append(gc)
-            t._tbl.insert(0,tg)
-        except: pass
-        return t
-
-    def add_table_row(table,cells_data,is_header=False,shade=None):
-        row=table.add_row()
-        trPr=row._tr.get_or_add_trPr()
-        cs=OxmlElement('w:cantSplit'); cs.set(qn('w:val'),'1'); trPr.append(cs)
-        bidi_=OxmlElement('w:bidi'); trPr.append(bidi_)
-        for cell,(txt,bold_) in zip(row.cells,cells_data):
-            cell.text=""
-            p=cell.paragraphs[0]
-            pPr=p._p.get_or_add_pPr()
-            pPr.append(OxmlElement("w:bidi"))
-            jc=OxmlElement("w:jc"); jc.set(qn("w:val"),"right"); pPr.append(jc)
-            vr=p.add_run(str(txt)); vr.font.size=Pt(9.5); vr.font.name="Arial"; vr.font.bold=bold_
-            if is_header: vr.font.color.rgb=RGBColor(0xFF,0xFF,0xFF)
-            else: vr.font.color.rgb=RGBColor(0,0,0)
-            tc=cell._tc; tcP=tc.get_or_add_tcPr()
-            shd=OxmlElement('w:shd'); shd.set(qn('w:val'),'clear'); shd.set(qn('w:color'),'auto')
-            if is_header: shd.set(qn('w:fill'),'1B3A6B')
-            elif shade: shd.set(qn('w:fill'),shade)
-            else: shd.set(qn('w:fill'),'FFFFFF')
-            tcP.append(shd)
-            mg=OxmlElement('w:tcMar')
-            for side in ['top','bottom','left','right']:
-                m=OxmlElement(f'w:{side}'); m.set(qn('w:w'),'70'); m.set(qn('w:type'),'dxa'); mg.append(m)
-            tcP.append(mg)
-
-    # ── Header ──
-    p_hdr=doc.add_paragraph(); p_hdr.alignment=WD_ALIGN_PARAGRAPH.CENTER
-    p_hdr.paragraph_format.space_after=Pt(6)
-
-    # Logo: uploaded bytes take priority, fallback to file
-    logo_added = False
-    if logo_bytes:
-        try:
-            p_hdr.add_run().add_picture(io.BytesIO(logo_bytes), width=Inches(2.8))
-            logo_added = True
-        except: pass
-    if not logo_added and os.path.exists(LOGO_PATH):
-        try:
-            p_hdr.add_run().add_picture(LOGO_PATH, width=Inches(2.8))
-        except: pass
-
-    # Center name
-    if center_name:
-        p_cn = doc.add_paragraph(); p_cn.alignment=WD_ALIGN_PARAGRAPH.CENTER
-        p_cn.paragraph_format.space_after=Pt(3)
-        set_rtl(p_cn)
-        r_cn = p_cn.add_run(center_name)
-        r_cn.font.name="Arial"; r_cn.font.size=Pt(14)
-        r_cn.font.bold=True; r_cn.font.color.rgb=DEEP_BLUE_RGB
-    r_t=p_hdr.add_run("\nمقياس ستانفورد-بينيه للذكاء — الصورة الخامسة\nتقرير التقييم النفسي")
-    r_t.font.name="Arial"; r_t.font.size=Pt(16); r_t.font.bold=True; r_t.font.color.rgb=DEEP_BLUE_RGB
-    add_para("SB5 · ترجمة وتقنين أ.د/ صفوت فرج",size=9,color=GOLD_RGB,
-             alignment=WD_ALIGN_PARAGRAPH.CENTER,space_after=2)
-    # Gold rule
-    p_sep=doc.add_paragraph(); p_sep.paragraph_format.space_before=Pt(2); p_sep.paragraph_format.space_after=Pt(10)
-    pPr=p_sep._p.get_or_add_pPr(); pBdr2=OxmlElement('w:pBdr')
-    bot2=OxmlElement('w:bottom'); bot2.set(qn('w:val'),'single'); bot2.set(qn('w:sz'),'12')
-    bot2.set(qn('w:space'),'2'); bot2.set(qn('w:color'),'C8922A')
-    pBdr2.append(bot2); pPr.append(pBdr2)
-
-    # ── Demographics ──
-    add_section_title("بيانات المفحوص")
-    info_tbl=make_table([2200,3000,2200,3000])
-    add_table_row(info_tbl,[("الحقل",True),("",True),("الحقل",True),("",True)],is_header=True)
-    add_table_row(info_tbl,[(data.get("dob","—") or "—",False),("تاريخ الميلاد",True),(data.get("name","—") or "—",False),("الاسم",True)])
-    add_table_row(info_tbl,[(data.get("gender","—") or "—",False),("النوع",True),(data.get("age","—") or "—",False),("العمر",True)],shade="EEF2FF")
-    add_table_row(info_tbl,[(data.get("test_date","—") or "—",False),("تاريخ التطبيق",True),(data.get("examiner","—") or "—",False),("الفاحص",True)])
-    add_table_row(info_tbl,[(date.today().strftime('%Y/%m/%d'),False),("تاريخ التقرير",True),(data.get("referral","—") or "—",False),("جهة الإحالة",True)],shade="EEF2FF")
-    doc.add_paragraph().paragraph_format.space_after=Pt(6)
-
-    # ── Score Summary Table ──
-    add_section_title("ملخص درجات الذكاء ومؤشرات العوامل")
-    score_tbl=make_table([3500,1200,1100,2200,2000])
-    add_table_row(score_tbl,[("المقياس",True),("الدرجة",True),("المئيني",True),("مدى الثقة",True),("الفئة",True)],is_header=True)
-    for k in IQ_SCORES:
-        v=data.get(k)
-        if not v: continue
-        _,ar_c,_ = classify(v); pct=percentile_from_ss(v); ci=data.get(f"{k}_ci","—") or "—"
-        shade="F5F7FF" if IQ_SCORES.index(k)%2==0 else "FFFFFF"
-        add_table_row(score_tbl,[(IQ_LABELS[k]['ar'],True),(str(v),False),(f"{pct}%",False),(ci,False),(ar_c,False)],shade=shade)
-    add_table_row(score_tbl,[("درجات مؤشرات العوامل",True),("",False),("",False),("",False),("",False)],is_header=True)
-    for i,k in enumerate(FACTOR_SCORES):
-        v=data.get(k)
-        if not v: continue
-        _,ar_c,_ = classify(v); pct=percentile_from_ss(v); ci=data.get(f"{k}_ci","—") or "—"
-        shade="FFF8EE" if i%2==0 else "FFFFFF"
-        add_table_row(score_tbl,[(FACTOR_LABELS[k]['ar'],True),(str(v),False),(f"{pct}%",False),(ci,False),(ar_c,False)],shade=shade)
-    doc.add_paragraph().paragraph_format.space_after=Pt(6)
-
-    # ── Subtest Table ──
-    has_sub = any(data.get(f"nv_{k.lower()}") or data.get(f"v_{k.lower()}") for k in FACTOR_SCORES)
-    if has_sub:
-        add_section_title("الدرجات المعيارية للاختبارات الفرعية")
-        sub_tbl=make_table([4000,2000,2000])
-        add_table_row(sub_tbl,[("الاختبار الفرعي",True),("غير لفظي",True),("لفظي",True)],is_header=True)
-        for i,k in enumerate(FACTOR_SCORES):
-            nv=data.get(f"nv_{k.lower()}","—") or "—"; v=data.get(f"v_{k.lower()}","—") or "—"
-            shade="F5F7FF" if i%2==0 else "FFFFFF"
-            add_table_row(sub_tbl,[(FACTOR_LABELS[k]['ar'],True),(str(nv),False),(str(v),False)],shade=shade)
-        doc.add_paragraph().paragraph_format.space_after=Pt(6)
-
-    # ── Charts ──
-    for chart_key,chart_title_ar in [
-        ("profile",     "ملف الدرجات الكاملة"),
-        ("gauge",       "مقياس تصنيف الذكاء الكلي"),
-        ("discrepancy", "تحليل الفجوة بين الذكاء اللفظي وغير اللفظي"),
-        ("radar",       "مخطط رادار مؤشرات العوامل"),
-        ("subtest",     "مقارنة الاختبارات الفرعية اللفظية وغير اللفظية"),
-    ]:
-        if charts.get(chart_key):
-            add_section_title(chart_title_ar)
-            p_c=doc.add_paragraph(); p_c.alignment=WD_ALIGN_PARAGRAPH.CENTER
-            p_c.paragraph_format.space_after=Pt(8)
-            w=Inches(5.8) if chart_key in ("profile","subtest","discrepancy") else Inches(4.0)
-            p_c.add_run().add_picture(io.BytesIO(charts[chart_key]),width=w)
-
-    # ── Narrative ──
-    add_section_title("التقرير السريري التفصيلي")
-    sec_ar_pat=re.compile(r'^[١٢٣٤٥٦٧٨٩أبجدهوزحطيكلمنسعفصقرشت\d]+[\.،:]\s+[\u0600-\u06FF]')
-    header_words_ar={"سبب الإحالة","المعلومات الأساسية","الاختبارات المطبقة","الملاحظات السلوكية",
-                     "نتائج التقييم وتفسيرها","نقاط القوة والقصور","الانطباعات التشخيصية",
-                     "التوصيات","الملخص","ملخص للوالدين"}
-    in_parent_ar=False; in_table_=False; cur_tbl_=None
-
-    for line in report_text.split('\n'):
-        ls=line.strip()
-        if not ls:
-            if in_table_: in_table_=False; cur_tbl_=None
-            doc.add_paragraph().paragraph_format.space_after=Pt(2); continue
-        if ls.startswith('━') or ls.startswith('═') or ls.startswith('---'):
-            in_table_=False; cur_tbl_=None; continue
-        upper=ls.upper()
-        is_sec=(sec_ar_pat.match(ls) or any(ls.startswith(h) or upper.startswith(h.upper()) for h in header_words_ar))
-        if is_sec:
-            in_table_=False; cur_tbl_=None
-            if "والدين" in ls or "مبسط" in ls:
-                in_parent_ar=True
-                p_sep2=doc.add_paragraph()
-                pPr2=p_sep2._p.get_or_add_pPr(); pBdr3=OxmlElement('w:pBdr')
-                t2=OxmlElement('w:top'); t2.set(qn('w:val'),'single'); t2.set(qn('w:sz'),'8')
-                t2.set(qn('w:space'),'4'); t2.set(qn('w:color'),'C8922A')
-                pBdr3.append(t2); pPr2.append(pBdr3)
-                p2=doc.add_paragraph(); set_rtl(p2)
-                r2_=p2.add_run("⭐ "+ls+" ⭐")
-                r2_.font.size=Pt(13); r2_.font.name="Arial"; r2_.font.bold=True; r2_.font.color.rgb=GOLD_RGB
-            else:
-                add_section_title(ls)
-            continue
-        if '|' in ls:
-            parts=[p.strip() for p in ls.split('|') if p.strip()]
-            if not parts: continue
-            if not in_table_ or cur_tbl_ is None:
-                in_table_=True; w_ea=9026//len(parts); cur_tbl_=make_table([w_ea]*len(parts))
-            add_table_row(cur_tbl_,[(p,False) for p in parts],shade="F5F7FF"); continue
-        in_table_=False; cur_tbl_=None
-        sz=11 if in_parent_ar else 10.5
-        col_=DARK_RGB if in_parent_ar else None
-        add_para(ls,size=sz,space_after=3,color=col_)
-
-    doc.add_paragraph().paragraph_format.space_after=Pt(12)
-    add_para("هذا التقرير سري. النتائج تعكس الأداء في تاريخ التطبيق فقط. يجب تفسير النتائج في سياق الملاحظة الإكلينيكية والبيانات الأخرى.",
-             size=8,color=MID_BLUE_RGB,italic=True)
-    buf=io.BytesIO(); doc.save(buf); buf.seek(0)
-    return buf
-
-# ══════════════════════════════════════════════════════════════
-#  EMAIL
-# ══════════════════════════════════════════════════════════════
-def send_email(data, buf_pdf, buf_doc, fn_pdf, fn_doc):
-    name=data.get("name","—") or "—"
-    fsiq=data.get("FSIQ")
-    center=data.get("_center_name","") or ""
-    en_c,ar_c,_=classify(fsiq) if fsiq else ("—","—","#888")
-    date_str=date.today().strftime('%B %d, %Y')
-    center_line = f"<tr><td style='padding:5px 0;color:#555;width:40%;'>Center</td><td><strong>{center}</strong></td></tr>" if center else ""
-    msg=MIMEMultipart('mixed')
-    msg['From']=GMAIL_USER; msg['To']=RECIPIENT_EMAIL
+def send_email(data, buf_pdf, fn_pdf):
+    name   = data.get("name","—") or "—"
+    fsiq   = data.get("FSIQ")
+    center = data.get("_center_name","") or ""
+    en_c, ar_c, _ = classify(fsiq) if fsiq else ("—","—","#888")
+    date_str = date.today().strftime('%B %d, %Y')
+    center_line = (f"<tr><td style='padding:5px 0;color:#555;width:40%;'>Center</td>"
+                   f"<td><strong>{center}</strong></td></tr>") if center else ""
     subject_center = f" | {center}" if center else ""
-    msg['Subject']=f"[SB5 Report] {name}{subject_center} — {date_str}"
-    body=f"""<html><body style="font-family:Georgia,serif;color:#1A1A2E;background:#F5F7FA;padding:20px;">
+
+    msg = MIMEMultipart('mixed')
+    msg['From']    = GMAIL_USER
+    msg['To']      = RECIPIENT_EMAIL
+    msg['Subject'] = f"[SB5 Report] {name}{subject_center} — {date_str}"
+
+    body = f"""<html><body style="font-family:Georgia,serif;color:#1A1A2E;background:#F5F7FA;padding:20px;">
   <div style="max-width:560px;margin:0 auto;background:white;border:1px solid #C8922A;border-radius:8px;padding:28px;">
     <h2 style="font-weight:600;font-size:18px;color:#1B3A6B;margin-bottom:2px;">Stanford-Binet 5 — Assessment Report</h2>
     <p style="color:#888;font-size:11px;margin-top:0;">SB5 Psychological Assessment — Auto-generated from uploaded report</p>
@@ -1267,32 +917,28 @@ def send_email(data, buf_pdf, buf_doc, fn_pdf, fn_doc):
       <tr><td style="padding:5px 0;color:#555;width:40%;">Examinee</td><td><strong>{name}</strong></td></tr>
       <tr><td style="padding:5px 0;color:#555;">Age</td><td>{data.get("age","—") or "—"}</td></tr>
       <tr><td style="padding:5px 0;color:#555;">FSIQ</td><td><strong style="color:#1B3A6B;">{fsiq or "—"}</strong></td></tr>
-      <tr><td style="padding:5px 0;color:#555;">Classification</td><td>{en_c} / {ar_c}</td></tr>
+      <tr><td style="padding:5px 0;color:#555;">Classification</td><td>{en_c}</td></tr>
       <tr><td style="padding:5px 0;color:#555;">Examiner</td><td>{data.get("examiner","—") or "—"}</td></tr>
+      <tr><td style="padding:5px 0;color:#555;">Test Date</td><td>{data.get("test_date","—") or "—"}</td></tr>
       <tr><td style="padding:5px 0;color:#555;">Report Date</td><td>{date_str}</td></tr>
     </table>
     <hr style="border:none;border-top:1px solid #DDE5F8;margin:16px 0;">
-    <p style="font-size:12px;line-height:1.7;">Two reports attached:<br>
-    📄 <strong>English Report (PDF)</strong> — Premium clinical report with charts and tables<br>
-    📝 <strong>Arabic Report (Word)</strong> — تقرير سريري عربي مُحسَّن بالجداول والمخططات</p>
+    <p style="font-size:12px;line-height:1.7;">
+    📄 <strong>English Report (PDF)</strong> attached — premium clinical report with charts and tables.</p>
     <p style="font-size:10px;color:#888;font-style:italic;">Confidential — for the evaluating clinician only.</p>
   </div></body></html>"""
-    msg.attach(MIMEText(body,'html'))
-    # PDF
+
+    msg.attach(MIMEText(body, 'html'))
     buf_pdf.seek(0)
-    part_pdf=MIMEBase('application','pdf')
-    part_pdf.set_payload(buf_pdf.read()); encoders.encode_base64(part_pdf)
-    part_pdf.add_header('Content-Disposition','attachment',filename=fn_pdf)
-    msg.attach(part_pdf)
-    # Word
-    buf_doc.seek(0)
-    part_doc=MIMEBase('application','vnd.openxmlformats-officedocument.wordprocessingml.document')
-    part_doc.set_payload(buf_doc.read()); encoders.encode_base64(part_doc)
-    part_doc.add_header('Content-Disposition','attachment',filename=fn_doc)
-    msg.attach(part_doc)
-    with smtplib.SMTP_SSL('smtp.gmail.com',465) as srv:
-        srv.login(GMAIL_USER,GMAIL_PASS)
-        srv.sendmail(GMAIL_USER,RECIPIENT_EMAIL,msg.as_string())
+    part = MIMEBase('application', 'pdf')
+    part.set_payload(buf_pdf.read())
+    encoders.encode_base64(part)
+    part.add_header('Content-Disposition', 'attachment', filename=fn_pdf)
+    msg.attach(part)
+
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as srv:
+        srv.login(GMAIL_USER, GMAIL_PASS)
+        srv.sendmail(GMAIL_USER, RECIPIENT_EMAIL, msg.as_string())
 
 # ══════════════════════════════════════════════════════════════
 #  PAGE CONFIG & CSS
@@ -1356,7 +1002,7 @@ with col_hdr:
     <div class="sb5-header">
         <h1>🎓 Stanford-Binet Intelligence Scales, 5th Ed.</h1>
         <p>مقياس ستانفورد-بينيه للذكاء — الصورة الخامسة&nbsp;&nbsp;·&nbsp;&nbsp;
-        Upload your Arabic SB5 report → receive premium English PDF + Arabic Word reports by email</p>
+        Upload your Arabic SB5 report → receive a premium English PDF report by email</p>
     </div>""", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════
@@ -1368,31 +1014,31 @@ if "done" not in st.session_state: st.session_state.done = False
 #  THANK-YOU SCREEN
 # ══════════════════════════════════════════════════════════════
 if st.session_state.done:
-    data = st.session_state.get("last_data",{})
-    name = data.get("name","—") or "—"
-    fsiq = data.get("FSIQ")
+    data        = st.session_state.get("last_data", {})
+    name        = data.get("name","—") or "—"
+    fsiq        = data.get("FSIQ")
     center_done = data.get("_center_name","")
-    en_c,_,_ = classify(fsiq) if fsiq else ("—","—","#888")
-    # Show uploaded logo if available, else file logo
+    en_c, _, _  = classify(fsiq) if fsiq else ("—","—","#888")
     logo_b = st.session_state.get("center_logo_bytes")
     if logo_b:
-        c1,c2,c3=st.columns([1,2,1])
+        c1,c2,c3 = st.columns([1,2,1])
         with c2: st.image(logo_b, use_container_width=True)
     elif os.path.exists(LOGO_PATH):
-        c1,c2,c3=st.columns([1,2,1])
-        with c2: st.image(LOGO_PATH,use_container_width=True)
-    center_line = f"<p style='color:{MID_BLUE};font-size:.9rem;margin-bottom:.5rem;'><strong>{center_done}</strong></p>" if center_done else ""
+        c1,c2,c3 = st.columns([1,2,1])
+        with c2: st.image(LOGO_PATH, use_container_width=True)
+    center_line = (f"<p style='color:{MID_BLUE};font-size:.9rem;margin-bottom:.5rem;'>"
+                   f"<strong>{center_done}</strong></p>") if center_done else ""
     st.markdown(f"""<div class="thank-you">
         {center_line}
-        <h2>Reports Sent Successfully</h2>
+        <h2>Report Sent Successfully</h2>
         <p><strong>{name}</strong></p>
         <p>FSIQ: <strong>{fsiq or "—"}</strong> &nbsp;·&nbsp; {en_c}</p>
         <p style="margin-top:1.2rem;font-size:.87rem;">
-            The English PDF and Arabic Word reports have been sent to the clinic email.<br>
-            تم إرسال التقرير الإنجليزي (PDF) والتقرير العربي (Word) إلى البريد الإلكتروني للعيادة.
+            The English PDF report has been sent to the clinic email.<br>
+            تم إرسال التقرير الإنجليزي (PDF) إلى البريد الإلكتروني للعيادة.
         </p>
     </div>""", unsafe_allow_html=True)
-    _,btn_col,_ = st.columns([2,2,2])
+    _, btn_col, _ = st.columns([2,2,2])
     with btn_col:
         if st.button("↺ Upload New Report", use_container_width=True):
             for k in list(st.session_state.keys()): del st.session_state[k]
@@ -1404,17 +1050,17 @@ if st.session_state.done:
 # ══════════════════════════════════════════════════════════════
 st.markdown("""<div class="upload-card">
     <h3>Upload Arabic SB5 Report</h3>
-    <p>Upload the Arabic <strong>Word report (.doc or .docx)</strong> generated by your offline SB5 software.<br>
-    The app will automatically extract all scores and information, generate a premium English PDF report
-    and an enhanced Arabic Word report, and send both to the clinic email.<br><br>
-    <strong>الرجاء رفع التقرير العربي بصيغة Word (.doc أو .docx)</strong> — سيتم استخراج البيانات تلقائياً وإرسال التقريرين.</p>
+    <p>Upload the Arabic <strong>Word report (.docx)</strong> — copy-paste the text from your offline
+    software into a new Word document and save as .docx.<br>
+    The app extracts all data automatically and emails you a premium English PDF report.<br><br>
+    <strong>الرجاء رفع التقرير العربي بصيغة Word (.docx)</strong> — سيتم استخراج البيانات تلقائياً
+    وإرسال التقرير الإنجليزي (PDF) إلى البريد الإلكتروني.</p>
 </div>""", unsafe_allow_html=True)
-
 
 # ── Center info ──
 st.markdown("<div style='background:white;border-radius:10px;padding:20px 24px;"
-            "box-shadow:0 2px 12px rgba(27,58,107,0.08);border-left:4px solid #C8922A;margin-bottom:16px;'>",
-            unsafe_allow_html=True)
+            "box-shadow:0 2px 12px rgba(27,58,107,0.08);border-left:4px solid #C8922A;"
+            "margin-bottom:16px;'>", unsafe_allow_html=True)
 col_cn, col_logo_up = st.columns([3, 2])
 with col_cn:
     st.markdown("<div style='font-size:.75rem;font-weight:700;color:#1B3A6B;"
@@ -1437,26 +1083,26 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("<div style='font-size:.75rem;font-weight:700;color:#1B3A6B;"
             "text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;'>"
-            "Arabic SB5 Report (.doc or .docx)</div>", unsafe_allow_html=True)
+            "Arabic SB5 Report (.docx)</div>", unsafe_allow_html=True)
 
 uploaded = st.file_uploader(
     "Choose Arabic SB5 Word report",
-    type=["docx", "doc"],
+    type=["docx"],
     label_visibility="collapsed",
 )
 
 if uploaded:
-    safe_name = re.sub(r'[^\w\-]','_', re.sub(r'\.(docx?|doc)$','', uploaded.name, flags=re.IGNORECASE))
+    safe_name = re.sub(r'[^\w\-]', '_',
+                       re.sub(r'\.docx?$', '', uploaded.name, flags=re.IGNORECASE))
     fn_pdf = f"{safe_name}_EN_Report.pdf"
-    fn_doc = f"{safe_name}_AR_Report.docx"
 
-    with st.spinner("⏳ Reading report, extracting data, generating charts and reports — please wait 30–60 seconds..."):
+    with st.spinner("⏳ Reading report, extracting data, generating charts and report — please wait 30–60 seconds..."):
 
         # 1. Extract raw text
         raw_text = extract_word_text(uploaded)
         if not raw_text.strip():
-            st.error("Could not extract text from this file. If your file is in old .doc format, "
-                     "please open it in Microsoft Word or LibreOffice and save it as .docx, then upload again.")
+            st.error("Could not extract text from this file. "
+                     "Please make sure you copied the report text into a .docx file.")
             st.stop()
 
         # 2. Parse structured data
@@ -1469,34 +1115,26 @@ if uploaded:
         charts = {}
         pb = make_profile_chart(data)
         if pb: charts["profile"] = pb
-
         fsiq_val = data.get("FSIQ")
-        if fsiq_val:
-            charts["gauge"] = make_classification_gauge(fsiq_val)
-
+        if fsiq_val: charts["gauge"] = make_classification_gauge(fsiq_val)
         disc_b = make_discrepancy_chart(data)
         if disc_b: charts["discrepancy"] = disc_b
-
-        factor_ss = {k: data.get(k) for k in FACTOR_SCORES}
         radar_b = make_factor_radar(data)
         if radar_b: charts["radar"] = radar_b
-
         sub_b = make_subtest_chart(data)
         if sub_b: charts["subtest"] = sub_b
 
-        # 4. Generate narrative reports
+        # 4. Generate English narrative report only
         report_en = generate_en_report(data)
-        report_ar = generate_ar_report(data)
 
-        # 5. Build files
+        # 5. Build English PDF
         center_name_v = center_name.strip() if center_name else ""
         logo_bytes_v  = st.session_state.get("center_logo_bytes", None)
         buf_pdf = build_pdf_report(report_en, data, charts, center_name_v, logo_bytes_v)
-        buf_doc = build_word_doc(report_ar, data, charts, center_name_v, logo_bytes_v)
 
         # 6. Send email
         try:
-            send_email(data, buf_pdf, buf_doc, fn_pdf, fn_doc)
+            send_email(data, buf_pdf, fn_pdf)
         except Exception as e:
             st.warning(f"Report generated but email failed: {e}")
 
