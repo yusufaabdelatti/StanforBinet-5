@@ -4,3 +4,4 @@ python-docx
 matplotlib
 numpy
 reportlab
+pdfplumber
