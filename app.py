@@ -15,7 +15,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import pdfplumber
 
 # ReportLab
 from reportlab.lib.pagesizes import A4
@@ -99,25 +98,25 @@ def percentile_from_ss(ss):
     return max(1,min(99,round(p*100)))
 
 # ══════════════════════════════════════════════════════════════
-#  STEP 1: EXTRACT TEXT FROM UPLOADED PDF
+#  STEP 1: EXTRACT TEXT FROM UPLOADED WORD DOCUMENT
 # ══════════════════════════════════════════════════════════════
-def extract_pdf_text(uploaded_file) -> str:
-    """Extract all text from the uploaded PDF using pdfplumber."""
-    text_parts = []
+def extract_docx_text(uploaded_file) -> str:
+    """Extract all text from the uploaded Word (.docx) file using python-docx."""
     uploaded_file.seek(0)
-    pdf_bytes = uploaded_file.read()
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text_parts.append(page_text)
-            # Also extract tables if present
-            for table in page.extract_tables():
-                for row in table:
-                    if row:
-                        clean = [str(c).strip() if c else "" for c in row]
-                        text_parts.append(" | ".join(clean))
-    return "\n".join(text_parts)
+    doc = Document(io.BytesIO(uploaded_file.read()))
+    parts = []
+    # Paragraphs
+    for para in doc.paragraphs:
+        t = para.text.strip()
+        if t:
+            parts.append(t)
+    # Tables
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if cells:
+                parts.append(" | ".join(cells))
+    return "\n".join(parts)
 
 # ══════════════════════════════════════════════════════════════
 #  STEP 2: PARSE DATA FROM RAW TEXT VIA GROQ
@@ -672,7 +671,7 @@ def _score_tbl(rows, col_widths, header_cmds=None):
     t.setStyle(TableStyle(cmds))
     return t
 
-def build_pdf_report(report_text, data, charts) -> io.BytesIO:
+def build_pdf_report(report_text, data, charts, center_name="", logo_bytes=None) -> io.BytesIO:
     buf = io.BytesIO()
     W_page, H_page = A4
     doc = SimpleDocTemplate(buf, pagesize=A4,
@@ -681,14 +680,30 @@ def build_pdf_report(report_text, data, charts) -> io.BytesIO:
     S = _pdf_styles()
     story = []
 
-    # ── Logo + Title ──
-    if os.path.exists(LOGO_PATH):
+    # ── Logo + Center Name + Title ──
+    # Uploaded logo takes priority, fallback to file logo
+    logo_shown = False
+    if logo_bytes:
+        try:
+            logo = RLImage(io.BytesIO(logo_bytes), width=4.5*cm, height=2*cm)
+            logo.hAlign = 'CENTER'
+            story.append(logo)
+            story.append(Spacer(1, 4))
+            logo_shown = True
+        except: pass
+    if not logo_shown and os.path.exists(LOGO_PATH):
         try:
             logo = RLImage(LOGO_PATH, width=4.5*cm, height=2*cm)
             logo.hAlign = 'CENTER'
             story.append(logo)
-            story.append(Spacer(1,4))
+            story.append(Spacer(1, 4))
         except: pass
+
+    if center_name:
+        story.append(Paragraph(center_name, ParagraphStyle('center_name',
+            fontName='Helvetica-Bold', fontSize=13, textColor=PDF_DEEP,
+            spaceAfter=4, alignment=TA_CENTER)))
+
     story.append(Paragraph("Stanford-Binet Intelligence Scales, Fifth Edition", S['title']))
     story.append(Paragraph("Psychological Assessment Report  ·  SB5 · Roid (2003)", S['subtitle']))
     story.append(HRFlowable(width=W, thickness=2, color=PDF_GOLD, spaceAfter=10))
@@ -825,8 +840,9 @@ def build_pdf_report(report_text, data, charts) -> io.BytesIO:
     story.append(Spacer(1,12))
     story.append(HRFlowable(width=W,thickness=0.5,color=PDF_BORDER))
     story.append(Spacer(1,4))
+    footer_center = f" | {center_name}" if center_name else ""
     story.append(Paragraph(
-        "This report is strictly confidential. Results reflect performance at the time of testing only. "
+        f"This report is strictly confidential{footer_center}. Results reflect performance at the time of testing only. "
         "Interpretation should be made in conjunction with clinical observation, history, and other assessment data. "
         "No formal diagnosis is provided herein.",
         S['small']))
@@ -957,7 +973,8 @@ def _build_legend_table(S, W):
 # ══════════════════════════════════════════════════════════════
 #  STEP 4B: BUILD ARABIC WORD REPORT
 # ══════════════════════════════════════════════════════════════
-def build_word_doc(report_text: str, data: dict, charts: dict) -> io.BytesIO:
+def build_word_doc(report_text: str, data: dict, charts: dict,
+                   center_name: str = "", logo_bytes: bytes = None) -> io.BytesIO:
     is_rtl = True
     doc = Document()
     for sec_ in doc.sections:
@@ -1050,8 +1067,27 @@ def build_word_doc(report_text: str, data: dict, charts: dict) -> io.BytesIO:
     # ── Header ──
     p_hdr=doc.add_paragraph(); p_hdr.alignment=WD_ALIGN_PARAGRAPH.CENTER
     p_hdr.paragraph_format.space_after=Pt(6)
-    if os.path.exists(LOGO_PATH):
-        p_hdr.add_run().add_picture(LOGO_PATH,width=Inches(2.8))
+
+    # Logo: uploaded bytes take priority, fallback to file
+    logo_added = False
+    if logo_bytes:
+        try:
+            p_hdr.add_run().add_picture(io.BytesIO(logo_bytes), width=Inches(2.8))
+            logo_added = True
+        except: pass
+    if not logo_added and os.path.exists(LOGO_PATH):
+        try:
+            p_hdr.add_run().add_picture(LOGO_PATH, width=Inches(2.8))
+        except: pass
+
+    # Center name
+    if center_name:
+        p_cn = doc.add_paragraph(); p_cn.alignment=WD_ALIGN_PARAGRAPH.CENTER
+        p_cn.paragraph_format.space_after=Pt(3)
+        set_rtl(p_cn)
+        r_cn = p_cn.add_run(center_name)
+        r_cn.font.name="Arial"; r_cn.font.size=Pt(14)
+        r_cn.font.bold=True; r_cn.font.color.rgb=DEEP_BLUE_RGB
     r_t=p_hdr.add_run("\nمقياس ستانفورد-بينيه للذكاء — الصورة الخامسة\nتقرير التقييم النفسي")
     r_t.font.name="Arial"; r_t.font.size=Pt(16); r_t.font.bold=True; r_t.font.color.rgb=DEEP_BLUE_RGB
     add_para("SB5 · ترجمة وتقنين أ.د/ صفوت فرج",size=9,color=GOLD_RGB,
@@ -1174,17 +1210,21 @@ def build_word_doc(report_text: str, data: dict, charts: dict) -> io.BytesIO:
 def send_email(data, buf_pdf, buf_doc, fn_pdf, fn_doc):
     name=data.get("name","—") or "—"
     fsiq=data.get("FSIQ")
+    center=data.get("_center_name","") or ""
     en_c,ar_c,_=classify(fsiq) if fsiq else ("—","—","#888")
     date_str=date.today().strftime('%B %d, %Y')
+    center_line = f"<tr><td style='padding:5px 0;color:#555;width:40%;'>Center</td><td><strong>{center}</strong></td></tr>" if center else ""
     msg=MIMEMultipart('mixed')
     msg['From']=GMAIL_USER; msg['To']=RECIPIENT_EMAIL
-    msg['Subject']=f"[SB5 Report] {name} — {date_str}"
+    subject_center = f" | {center}" if center else ""
+    msg['Subject']=f"[SB5 Report] {name}{subject_center} — {date_str}"
     body=f"""<html><body style="font-family:Georgia,serif;color:#1A1A2E;background:#F5F7FA;padding:20px;">
   <div style="max-width:560px;margin:0 auto;background:white;border:1px solid #C8922A;border-radius:8px;padding:28px;">
     <h2 style="font-weight:600;font-size:18px;color:#1B3A6B;margin-bottom:2px;">Stanford-Binet 5 — Assessment Report</h2>
     <p style="color:#888;font-size:11px;margin-top:0;">SB5 Psychological Assessment — Auto-generated from uploaded report</p>
     <hr style="border:none;border-top:2px solid #C8922A;margin:16px 0;">
     <table style="width:100%;font-size:13px;border-collapse:collapse;">
+      {center_line}
       <tr><td style="padding:5px 0;color:#555;width:40%;">Examinee</td><td><strong>{name}</strong></td></tr>
       <tr><td style="padding:5px 0;color:#555;">Age</td><td>{data.get("age","—") or "—"}</td></tr>
       <tr><td style="padding:5px 0;color:#555;">FSIQ</td><td><strong style="color:#1B3A6B;">{fsiq or "—"}</strong></td></tr>
@@ -1292,11 +1332,19 @@ if st.session_state.done:
     data = st.session_state.get("last_data",{})
     name = data.get("name","—") or "—"
     fsiq = data.get("FSIQ")
+    center_done = data.get("_center_name","")
     en_c,_,_ = classify(fsiq) if fsiq else ("—","—","#888")
-    if os.path.exists(LOGO_PATH):
+    # Show uploaded logo if available, else file logo
+    logo_b = st.session_state.get("center_logo_bytes")
+    if logo_b:
+        c1,c2,c3=st.columns([1,2,1])
+        with c2: st.image(logo_b, use_container_width=True)
+    elif os.path.exists(LOGO_PATH):
         c1,c2,c3=st.columns([1,2,1])
         with c2: st.image(LOGO_PATH,use_container_width=True)
+    center_line = f"<p style='color:{MID_BLUE};font-size:.9rem;margin-bottom:.5rem;'><strong>{center_done}</strong></p>" if center_done else ""
     st.markdown(f"""<div class="thank-you">
+        {center_line}
         <h2>Reports Sent Successfully</h2>
         <p><strong>{name}</strong></p>
         <p>FSIQ: <strong>{fsiq or "—"}</strong> &nbsp;·&nbsp; {en_c}</p>
@@ -1317,29 +1365,58 @@ if st.session_state.done:
 # ══════════════════════════════════════════════════════════════
 st.markdown("""<div class="upload-card">
     <h3>Upload Arabic SB5 Report</h3>
-    <p>Upload the Arabic PDF report generated by your offline SB5 software.<br>
+    <p>Upload the Arabic <strong>Word (.docx)</strong> report generated by your offline SB5 software.<br>
     The app will automatically extract all scores and information, generate a premium English PDF report
     and an enhanced Arabic Word report, and send both to the clinic email.<br><br>
-    <strong>الرجاء رفع التقرير العربي بصيغة PDF</strong> — سيتم استخراج البيانات تلقائياً وإرسال التقريرين.</p>
+    <strong>الرجاء رفع التقرير العربي بصيغة Word (.docx)</strong> — سيتم استخراج البيانات تلقائياً وإرسال التقريرين.</p>
 </div>""", unsafe_allow_html=True)
 
+
+# ── Center info ──
+st.markdown("<div style='background:white;border-radius:10px;padding:20px 24px;"
+            "box-shadow:0 2px 12px rgba(27,58,107,0.08);border-left:4px solid #C8922A;margin-bottom:16px;'>",
+            unsafe_allow_html=True)
+col_cn, col_logo_up = st.columns([3, 2])
+with col_cn:
+    st.markdown("<div style='font-size:.75rem;font-weight:700;color:#1B3A6B;"
+                "text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;'>"
+                "Center / Clinic Name &nbsp;·&nbsp; اسم المركز / العيادة</div>",
+                unsafe_allow_html=True)
+    center_name = st.text_input("center_name", value="",
+                                placeholder="e.g. Wijdan Therapy Center / مركز وجدان للعلاج النفسي",
+                                label_visibility="collapsed", key="center_name_inp")
+with col_logo_up:
+    st.markdown("<div style='font-size:.75rem;font-weight:700;color:#1B3A6B;"
+                "text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;'>"
+                "Center Logo (optional)</div>", unsafe_allow_html=True)
+    logo_upload = st.file_uploader("Center logo", type=["png","jpg","jpeg"],
+                                   label_visibility="collapsed", key="logo_upload_inp")
+    if logo_upload:
+        st.session_state["center_logo_bytes"] = logo_upload.read()
+        st.success("✓ Logo uploaded")
+st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown("<div style='font-size:.75rem;font-weight:700;color:#1B3A6B;"
+            "text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;'>"
+            "Arabic SB5 Report (.docx)</div>", unsafe_allow_html=True)
+
 uploaded = st.file_uploader(
-    "Choose Arabic SB5 PDF report",
-    type=["pdf"],
+    "Choose Arabic SB5 Word report",
+    type=["docx"],
     label_visibility="collapsed",
 )
 
 if uploaded:
-    safe_name = re.sub(r'[^\w\-]','_', uploaded.name.replace('.pdf',''))
+    safe_name = re.sub(r'[^\w\-]','_', uploaded.name.replace('.docx',''))
     fn_pdf = f"{safe_name}_EN_Report.pdf"
     fn_doc = f"{safe_name}_AR_Report.docx"
 
     with st.spinner("⏳ Reading report, extracting data, generating charts and reports — please wait 30–60 seconds..."):
 
         # 1. Extract raw text
-        raw_text = extract_pdf_text(uploaded)
+        raw_text = extract_docx_text(uploaded)
         if not raw_text.strip():
-            st.error("Could not extract text from this PDF. Please make sure it is a text-based (not scanned) PDF.")
+            st.error("Could not extract text from this Word document. Please make sure it is a valid .docx file.")
             st.stop()
 
         # 2. Parse structured data
@@ -1372,8 +1449,10 @@ if uploaded:
         report_ar = generate_ar_report(data)
 
         # 5. Build files
-        buf_pdf = build_pdf_report(report_en, data, charts)
-        buf_doc = build_word_doc(report_ar, data, charts)
+        center_name_v = center_name.strip() if center_name else ""
+        logo_bytes_v  = st.session_state.get("center_logo_bytes", None)
+        buf_pdf = build_pdf_report(report_en, data, charts, center_name_v, logo_bytes_v)
+        buf_doc = build_word_doc(report_ar, data, charts, center_name_v, logo_bytes_v)
 
         # 6. Send email
         try:
@@ -1382,6 +1461,7 @@ if uploaded:
             st.warning(f"Report generated but email failed: {e}")
 
         # 7. Save state and redirect
+        data["_center_name"] = center_name_v
         st.session_state["last_data"] = data
         st.session_state.done = True
         st.rerun()
